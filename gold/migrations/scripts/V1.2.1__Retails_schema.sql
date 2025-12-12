@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS {{ database_name }}.{{ sf_schema }}.PRODUCT (
 -- ============================================================================
 
 -- Order Fact Table
-CREATE TABLE IF NOT EXISTS {{ database_name }}.{{ sf_schema }}.ORDER (
+CREATE TABLE IF NOT EXISTS {{ database_name }}.{{ sf_schema }}.ORDERS (
     ORDER_ID NUMBER(15,0) NOT NULL PRIMARY KEY,
     CUSTOMER_ID NUMBER(10,0) NOT NULL,
     ORDER_DATE DATE NOT NULL,
