@@ -1,0 +1,7 @@
+config-version: 1.0
+root-folder: bronze/migrations/scripts
+vars:
+  database_name: "{{ env_var('SF_DATABASE') }}"
+create-change-history-table: true
+change-history-table: "{{ env_var('SF_DATABASE') }}.SCHEMACHANGE.CHANGE_HISTORY"
+query-tag: "SCHEMACHANGE_DEPLOY_{{ env_var('GITHUB_REF_NAME') | upper if env_var('GITHUB_REF_NAME') else 'UNKNOWN' }}"

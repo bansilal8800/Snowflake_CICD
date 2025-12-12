@@ -1,0 +1,187 @@
+name: Snowflake Schemachange Deploy (Global Ordered)
+
+on:
+  push:
+    branches:
+      - dev
+      - uat
+      - prod
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      controllers: ${{ steps.get_ctrl.outputs.controllers }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
+
+      - name: Get controllers list
+        id: get_ctrl
+        run: |
+          controllers_json=$(python config/get_controller.py)
+          echo "controllers=$controllers_json" >> "$GITHUB_OUTPUT"
+
+  deploy-global-ordered:
+    needs: prepare
+    runs-on: ubuntu-latest
+    # Map branch → GitHub Environment (secrets + protection rules)
+    environment: >
+      ${{ github.ref == 'refs/heads/prod' && 'sf_prod_env_cred' ||
+          github.ref == 'refs/heads/uat' && 'sf_test_env_cred' ||
+          'sf_dev_env_cred' }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies (pin schemachange)
+        run: |
+          python -m pip install --upgrade pip
+          # pin schemachange to a tested version to avoid CLI flag surprises
+          pip install tomli schemachange==4.1.0 "snowflake-connector-python[secure-local-storage]" cryptography pyyaml jq
+
+      - name: show repo and schemachange info
+        run: |
+          echo "PWD: $(pwd)"
+          echo "Listing repo top-level files:"
+          ls -la || true
+          echo "Finding schemachange-config.yml in repo (recursive):"
+          find . -maxdepth 6 -type f -name "schemachange-config.yml" -print -quit || true
+          schemachange --version || true
+          schemachange --help | sed -n '1,200p' || true
+
+      # ── Private Key (raw PEM or base64-encoded PEM) ─────────────────────
+      - name: Write and normalize private key
+        id: write_key
+        run: |
+          set -e
+          mkdir -p /tmp/sf_key
+          echo "${{ secrets.SF_PRIVATE_KEY }}" > /tmp/sf_key/raw.secret
+
+          if base64 --decode /tmp/sf_key/raw.secret > /tmp/sf_key/decoded.pem 2>/dev/null && \
+             head -n1 /tmp/sf_key/decoded.pem | grep -q "-----BEGIN"; then
+            mv /tmp/sf_key/decoded.pem /tmp/sf_key/sf_private_key.p8
+          else
+            cp /tmp/sf_key/raw.secret /tmp/sf_key/sf_private_key.p8
+          fi
+          chmod 600 /tmp/sf_key/sf_private_key.p8
+
+      # ── Passphrase – now inside a step (secrets allowed) ───────────────
+      - name: Export private key passphrase (if set)
+        run: |
+          if [ -n "${{ secrets.SF_PRIVATE_KEY_PASSPHRASE }}" ]; then
+            echo "SNOWFLAKE_PRIVATE_KEY_FILE_PWD=${{ secrets.SF_PRIVATE_KEY_PASSPHRASE }}" >> $GITHUB_ENV
+            echo "Passphrase exported"
+          else
+            echo "No passphrase defined"
+          fi
+
+      # ── connections.toml ───────────────────────────────────────────────
+      - name: Create connections.toml
+        run: |
+          cat > connections.toml <<EOF
+          [snowflake]
+          account = "${{ secrets.SF_ACCOUNT }}"
+          user = "${{ secrets.SF_USERNAME }}"
+          role = "${{ secrets.SF_ROLE }}"
+          warehouse = "${{ secrets.SF_WAREHOUSE }}"
+          database = "${{ secrets.SF_DATABASE }}"
+          authenticator = "SNOWFLAKE_JWT"
+          private_key_file = "/tmp/sf_key/sf_private_key.p8"
+          EOF
+          chmod 600 connections.toml
+
+      # ── Merge all controller variables ───────────────────────────────────
+      - name: Merge all controller variables
+        id: merge_vars
+        run: |
+          COMBINED_VARS="{}"
+          for ctrl in $(echo '${{ needs.prepare.outputs.controllers }}' | jq -r '.[]'); do
+            VAR_FILE="$ctrl/migrations/$ctrl-var.yml"
+            if [ -f "$VAR_FILE" ]; then
+              echo "Merging $VAR_FILE"
+              ctrl_vars=$(python config/get_vars.py "$VAR_FILE")
+              COMBINED_VARS=$(jq -s 'reduce .[] as $item ({}; . * $item)' \
+                <(echo "$COMBINED_VARS") <(echo "$ctrl_vars"))
+            fi
+          done
+
+          echo "Final merged variables:"
+          echo "$COMBINED_VARS" | jq .
+
+          echo "vars_b64=$(echo "$COMBINED_VARS" | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      # ── GLOBAL schemachange run (strict version order + fail-fast) ───────
+      - name: Run schemachange - Global Ordered Deployment
+        run: |
+          set -euo pipefail
+
+          # Determine schemachange config folder intelligently:
+          # 1) prefer migrations/common-config if it exists
+          # 2) else, use the directory containing the first schemachange-config.yml found
+          # 3) else, fallback to repository root (.) and warn
+          if [ -d "migrations/common-config" ]; then
+            CFG_FOLDER="migrations/common-config"
+          else
+            FOUND_CFG_FILE=$(find . -maxdepth 6 -type f -name "schemachange-config.yml" -print -quit || true)
+            if [ -n "$FOUND_CFG_FILE" ]; then
+              CFG_FOLDER=$(dirname "$FOUND_CFG_FILE")
+            else
+              echo "Warning: migrations/common-config not found and no schemachange-config.yml discovered. Falling back to repository root (.)"
+              CFG_FOLDER="."
+            fi
+          fi
+
+          echo "Using schemachange config folder: $CFG_FOLDER"
+          echo "Listing contents of the chosen config folder:"
+          ls -la "$CFG_FOLDER" || true
+
+          VARS_JSON=$(echo "${{ steps.merge_vars.outputs.vars_b64 }}" | base64 --decode)
+          echo "Variables:"
+          echo "$VARS_JSON" | jq .
+
+          echo "Deploying all scripts in strict version order..."
+          schemachange deploy \
+            --config-folder "$CFG_FOLDER" \
+            --config-file-name schemachange-config.yml \
+            -f . \
+            --schemachange-connections-file-path ./connections.toml \
+            --snowflake-private-key-file /tmp/sf_key/sf_private_key.p8 \
+            --snowflake-authenticator SNOWFLAKE_JWT \
+            --vars "$VARS_JSON" \
+            --create-change-history-table \
+            --verbose
+
+        env:
+          # Schemachange expects SF_* variables; set both SF_* and SNOWFLAKE_* for safety
+          SF_ACCOUNT: ${{ secrets.SF_ACCOUNT }}
+          SF_USER: ${{ secrets.SF_USERNAME }}
+          SF_ROLE: ${{ secrets.SF_ROLE }}
+          SF_WAREHOUSE: ${{ secrets.SF_WAREHOUSE }}
+          SF_DATABASE: ${{ secrets.SF_DATABASE }}
+
+          SNOWFLAKE_ACCOUNT: ${{ secrets.SF_ACCOUNT }}
+          SNOWFLAKE_USER: ${{ secrets.SF_USERNAME }}
+          SNOWFLAKE_ROLE: ${{ secrets.SF_ROLE }}
+          SNOWFLAKE_WAREHOUSE: ${{ secrets.SF_WAREHOUSE }}
+          SNOWFLAKE_DATABASE: ${{ secrets.SF_DATABASE }}
