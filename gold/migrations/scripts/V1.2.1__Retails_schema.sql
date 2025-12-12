@@ -13,9 +13,7 @@ CREATE TABLE IF NOT EXISTS {{ database_name }}.{{ sf_schema }}.PRODUCT (
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
     IS_ACTIVE BOOLEAN DEFAULT TRUE
-)
-COMMENT = 'Product dimension table - contains product master data'
-CLUSTER BY (CATEGORY, SUBCATEGORY);
+);
 
 -- ============================================================================
 -- FACT TABLES
@@ -39,8 +37,5 @@ CREATE TABLE IF NOT EXISTS {{ database_name }}.{{ sf_schema }}.ORDER (
     SHIPPING_ADDRESS VARCHAR(500),
     NOTES VARCHAR(1000),
     CREATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP(),
-    FOREIGN KEY (CUSTOMER_ID) REFERENCES {{ database_name }}.{{ sf_schema }}.CUSTOMER(CUSTOMER_ID)
-)
-COMMENT = 'Order fact table - contains transactional order data'
-CLUSTER BY (CUSTOMER_ID, ORDER_DATE);
+    UPDATED_AT TIMESTAMP_NTZ DEFAULT CURRENT_TIMESTAMP()
+);
