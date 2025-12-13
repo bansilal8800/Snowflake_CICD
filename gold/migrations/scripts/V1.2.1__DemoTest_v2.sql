@@ -2,7 +2,7 @@
 -- INSERT STATEMENTS FOR CUSTOMER TABLE
 -- ============================================================================
 
-DROP TABLE {{ database_name }}.{{ sf_schema }}.PRODUCT;
+DROP TABLE {{ database_name }}.{{ sf_schema }}.CUSTOMER;
 
 INSERT INTO {{ database_name }}.{{ sf_schema }}.CUSTOMER (
     CUSTOMER_ID,
@@ -51,16 +51,3 @@ INSERT INTO {{ database_name }}.{{ sf_schema }}.CUSTOMER (
 ) VALUES (
     1002,
     'Sarah Jennifer Johnson',
-    'sarah.johnson@email.com',
-    '+1-555-0102',
-    'United States',
-    'New York',
-    'New York City',
-    '10001',
-    'VIP',
-    '2021-07-22',
-    '2025-12-08',
-    28450.75,
-    TRUE
-);
-
